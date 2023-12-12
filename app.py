@@ -22,8 +22,8 @@ from nougat.utils.checkpoint import get_checkpoint
 from nougat.dataset.rasterize import rasterize_paper
 from nougat.utils.device import move_to_device, default_batch_size
 from tqdm import tqdm
-
-
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import HTMLResponse
 SAVE_DIR = Path("./pdfs")
 BATCHSIZE = int(os.environ.get("NOUGAT_BATCHSIZE", default_batch_size()))
 NOUGAT_CHECKPOINT = get_checkpoint()
@@ -34,7 +34,11 @@ if NOUGAT_CHECKPOINT is None:
     sys.exit(1)
 
 app = FastAPI(title="Nougat API")
-origins = ["http://localhost", "http://127.0.0.1"]
+
+# 挂载静态文件夹，配置静态文件路由
+app.mount("/static", StaticFiles(directory="static"), name="static")
+
+origins = ["http://localhost", "http://127.0.0.1","0.0.0.0"]
 
 app.add_middleware(
     CORSMiddleware,
@@ -58,15 +62,21 @@ async def load_model(
             BATCHSIZE = 1
         model.eval()
 
+# 一个简单的路由来提供主页
+@app.get("/", response_class=HTMLResponse)
+async def main():
+    with open(os.path.join('static', 'index.html'), 'r') as f:
+        html_content = f.read()
+    return HTMLResponse(content=html_content)
 
-@app.get("/")
-def root():
-    """Health check."""
-    response = {
-        "status-code": HTTPStatus.OK,
-        "data": {},
-    }
-    return response
+# @app.get("/")
+# def root():
+#     """Health check."""
+#     response = {
+#         "status-code": HTTPStatus.OK,
+#         "data": {},
+#     }
+#     return response
 
 
 @app.post("/predict/")

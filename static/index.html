@@ -1,0 +1,41 @@
+<!-- index.html -->
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>PDF to Markdown Converter</title>
+</head>
+<body>
+    <h1>PDF to Markdown Converter</h1>
+    <form id="upload-form">
+        <input type="file" id="pdf-file" name="pdf-file" accept=".pdf" required>
+        <button type="submit">Upload PDF</button>
+    </form>
+    <div id="markdown-viewer">
+        <!-- Markdown内容将在这里渲染 -->
+    </div>
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script>
+        document.getElementById('upload-form').addEventListener('submit', function(e) {
+            e.preventDefault();
+            var fileInput = document.getElementById('pdf-file');
+            var file = fileInput.files[0];
+            var formData = new FormData();
+            formData.append("file", file);
+
+            fetch('http://localhost:8000/upload-pdf/', {
+                method: 'POST',
+                body: formData
+            })
+            .then(response => response.json())
+            .then(data => {
+                var markdownViewer = document.getElementById('markdown-viewer');
+                //markdownViewer.innerText = data.markdown; // 这里你可能需要一个Markdown到HTML的转换器
+                  markdownViewer.innerHTML = marked(data.markdown); // 使用marked.js来转换Markdown到HTML
+            })
+            .catch(error => console.error('Error:', error));
+        });
+    </script>
+</body>
+</html>
