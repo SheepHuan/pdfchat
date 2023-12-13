@@ -1,0 +1,448 @@
+# Accelerating Deep Neural Networks on Mobile Multicore NPUs
+
+Hanwoong Jung
+
+Samsung Advanced Institute of Technology
+
+Suwon, Korea
+
+hw7884,jung@samsung.com
+
+Alexey Pushchin
+
+Samsung R&D Institute
+
+Samsung R&D Institute
+
+Moscow, Russia
+
+a.puschin@samsung.com
+
+Maxim Ostapenko
+
+Samsung Advanced Institute of Technology
+
+Suwon, Korea
+
+maxim.o@samsung.com
+
+Wenlong Niu
+
+Samsung R&D Institute
+
+Moscow, Russia
+
+wenlong.nui@samsung.com
+
+Ilya Palachev
+
+Samsung R&D Institute
+
+Moscow, Russia
+
+i.palachev@samsung.com
+
+Yutian Qu
+
+Samsung R&D Institute
+
+Samsung Advanced Institute
+
+Xian, China
+
+yutian@1.qua@samsung.com
+
+Pavel Fedin
+
+Samsung R&D Institute
+
+Moscow, Russia
+
+p.fedin@samsung.com
+
+Yuri Gribov
+
+Samsung R&D Institute
+
+Moscow, Russia
+
+ygribov@samsung.com
+
+Heewoo Nam
+
+Samsung Advanced Institute of Technology
+
+Suwon, Korea
+
+hee-woo.nam@samsung.com
+
+Dongguen Lim
+
+Samsung Advanced Institute of Technology
+
+Sawon, Korea
+
+dongguen.lim@samsung.com
+
+Hyunjun Kim
+
+Samsung Advanced Institute of Technology
+
+Suwon, Korea
+
+hjun20.kim@samsung.com
+
+Joonho Song
+
+Samsung Advanced Institute
+
+Samsung Advanced Institute
+
+Suwon, Korea
+
+joonho71.song@samsung.com
+
+Seungwon Lee
+
+Samsung Advanced Institute of Technology
+
+Suwon, Korea
+
+seungk.lee@samsung.com
+
+Hwangsoo Han
+
+Sungkyunkwan University
+
+Suwon, Korea
+
+hhan@skku.edu
+
+###### Abstract.
+
+Neural processing units (NPUs) have become indispensable parts of mobile SoCs. Furthermore, integrating multiple NPU cores into a single chip becomes a promising solution for ever-increasing computing power demands in mobile devices. This paper addresses techniques to maximize the utilization of NPU cores and reduce the latency of on-device inference. Mobile NPUs typically have a small amount of local memory (or scratch pad memory, SPM) that provides space only enough for input/output tensors and weights of one layer operation in deep neural networks (DNNs). Even in multicore NPUs, such local memories are distributed across the cores. In such systems, executing network layer operations in parallel is the primary vehicle to achieve performance. By partitioning a layer of DNNs into multiple sub-layers, we can execute them in parallel on multicore NPUs. Within a core, we can also employ pipelined execution to reduce the execution time of a sub-layer. In this execution model, synchronizing parallel execution and loading/storing intermediate tensors in global memory are the main bottlenecks. To alleviate these problems, we propose novel optimization techniques which carefully consider partitioning direction, execution order, synchronization, and global memory access. Using six popular convolutional neural networks (CNNs), we evaluate our optimization techniques in a flagship mobile SoC with three cores. Compared to the highest-performing partitioning approach, our techniques improve performance by 23%, achieving a speedup of 2.1x over single-core systems.
+
+Neural networks, Multicore, Neural processing unit, Layer partitioning, Scheduling optimization +
+Footnote †: journal: Computer systems
+
++
+Footnote †: journal: Computer systems
+scene segmentation. To increase the performance of such applications, many researchers have designed specialized accelerators to process DNNs efficiently [7, 9, 43]. Nowadays, most of the major smartphone manufacturers design their own accelerators, known as neural processing units (NPUs) and integrate them into their latest mobile SoCs [32, 16].
+
+The performance of NPU continues to increase for the competitiveness of their products by accelerating DNN applications and AI benchmarks [30, 12]. Similar to the case of CPU, there is a traditional design issue for NPU: _a big single core versus small multiple cores_. Multicore NPUs typically bring many benefits, when concurrent execution of multiple DNNs as well as efficient processing of various sized networks is needed. In addition, to cope with the rapid product release cycle and market demand for various product lineups from _entry_ to _flagship_ at the same time, designing products with different number of NPU cores is a suitable approach for manufacturers.
+
+Figure 1 shows a typical architecture of the latest mobile SoCs which include a multicore NPU. Multicore design consists of a compute engine and distributed, isolated local memory per core. Local memory is explicitly managed by programmers through load and store operations to global memory, and buffers around the compute engine are automatically managed by hardware logic.
+
+A major hurdle for multicore designs in mobile NPUs is efficiently accelerating the inference of a single neural network. Since most DNN usages on mobile devices are inferences on a single image input, the latency of DNN inference is a key metric to evaluate performance. Parallelization is still a viable approach to enhancing performance, but we need to devise parallelization techniques for latency improvement. Recently, parallelization of DNN execution has been intensively investigated. Although many research works have focused on distributed DNN training on a large scale cluster of multi-GPU nodes [4, 26, 28, 34], techniques used in these works can be still effective to multicore NPU inference.
+
+Parallelization approaches used in distributed DNN training can be categorized as data, operator (or model), and pipeline parallelisms. Combining them, as known as 3D parallelism [29, 48], enables cluster of accelerator nodes to process large scale DNN models. As inference on mobile devices usually works on a single image input, data parallelism, which decomposes a large number of input data into small sets, will not suit well on multicore NPU inference. On the other hand, operator and pipeline parallelisms [39, 42, 23, 13, 51, 48] can be adopted to mobile multicore NPUs.
+
+By partitioning an operator (a layer in DNN graph) to take multiple pieces of weights and/or input tensors, operator parallelism can be employed. Pipeline parallelism can also be employed within a core by splitting inputs into multiple tiles and executing them in a software pipeline. The main benefit of single-core tiling comes from overlapping global memory accesses with kernel computations. Pipelining in distributed DNN training often employs a large number accelerators to form a pipelined execution and segmented sub-graphs of DNN form stages for the pipeline. However, mobile devices usually have only a few number of cores, which is too few to form a long multi-stage pipeline. Moreover, considering that mobile NPU inference typically takes a single image input, we can easily conclude that pipelining across multiple NPU cores is inadequate on mobile devices.
+
+In this paper, we adopt layer partitioning for operator parallelism across multiple NPU cores and input tiling for pipeline parallelism within a single core. While employing such parallelisms, we found many opportunities to eliminate the overheads associated with synchronization across multicores and communication between local memory and global memory. Optimization techniques make many decisions including execution order of layers, partitioning direction, partitioning size for NPU cores, trade-off between communication and redundant computation, and tile execution order. Our approach breaks down the original problem into two sub-problems: partitioning for parallelization across multicores and tiling for pipelining on a single core. Key contributions are summarized as follow:
+
+* We define the optimization problem of parallelisms for multicore NPUs which considers the complex correlation between workload balancing, data reusability, synchronization, and computation redundancy. The problem has not been addressed by prior work.
+* We propose execution models for multicore NPU systems: partitioning for multicore parallelization and tiling for single core pipelining, which reduces the intrinsic overheads of multicore NPU parallelisms.
+* We propose optimization techniques to improve performance by eliminating synchronization and scheduling data exchange early.
+
+The rest of this paper is organized as follows. Section 2 describes the overall execution models on multicore NPUs. Section 3 introduces details of proposed optimizations. Section 4 shows experimental results. Section 5 discusses related work, and we conclude our paper in Section 6.
+
+Figure 1: Architecture of mobile SoC with multicore NPU
+
+
+
+## 2. Execution Models for Multicore NPUs
+
+First, we describe a base execution model for DNN inference on a single core NPU system. Figure 2 shows the base execution model for a single neural network on a single core. In this base model, the NPU subsystem is equipped with a single compute engine along with local memory. Since NPUs on mobile devices are designed within a small area of the SoC, its local memory is just large enough to hold only the input/output tensors and the kernel weights of one layer of the neural network.
+
+Figure 2 (a) shows a neural network containing five layers, \(l_{0}\), \(l_{1}\),..., \(l_{4}\). To perform an inference on the neural network, we sort the layers in topological order and execute one layer by another in that order. To execute a layer (\(l_{k}\)) on NPU, we load its input tensor (\(input\)\(l_{k}\)) and kernel weights (\(kernel\)\(l_{k}\)) from global memory, compute its output tensor (\(output\)\(l_{k}\)), and store the output in global memory. As shown in Figure 2 (b), we use the local memory of NPU to store the input, output, and kernel for the currently executing layer. For each layer execution, we follow the three steps: 1_load_\(l_{k}\), 2_compute_\(l_{k}\), 3_store_\(l_{k}\). While executing layers, we use the global memory in the mobile SoC to store the intermediate output tensors from the previously executed layers, which will be loaded later as input tensors to the local memory for layer execution. In addition, all the kernel weights of the all layers are stored in the global memory. They will be loaded to the local memory, when its corresponding layer executes. The top layer takes the user input and the output computed from the bottom layer is the final output of the execution.
+
+### Parallel Execution of Partitions on Multicores
+
+Figure 3 shows an example of layer partitioning, along with parallel execution of partitions on a three core NPU. To parallelize DNN execution, the original neural network is partitioned into sub-layers. Figure 3 (a) shows a neural network with three layers (\(l_{0}\), \(l_{1}\), and \(l_{2}\)) and Figure 3 (b) shows how each layer is partitioned into sub-layers. Assuming three core NPU subsystem, layer \(l_{0}\) is partitioned to three sub-layers (\(l_{0}^{0}\), \(l_{0}^{1}\), and \(l_{0}^{2}\)). The superscripts of sub-layers indicate the processor cores to run on, respectively. The rest of the layers are also partitioned into three sub-layers. To maintain the same execution semantics, the sub-layers from a layer are synchronized at the end. The dotted lines indicate the boundaries of cores. Within a core, sub-layers are executed in the original topological order with synchronizations with other cores. Figure 3 (c) describes layer execution in detail. Each sub-layer \(l_{j}^{i}\) (\(i_{th}\) partition of the \(j_{th}\) layer) consists of _load_\(l_{j}^{i}\), _compute_\(l_{j}^{i}\), _and store_\(l_{j}^{i}\), where it loads the corresponding input tensors and kernel weights for the sub-layer \(l_{j}^{i}\), computes the output and stores it for that sub-layer. Operator partitioning ((20; 42; 48)) is well-investigated for parallelization. We adopt similar principles to parallelize them. On top of that, we will introduce several optimization techniques to minimize synchronization overhead by removing or hiding it and optimization problem between them.
+
+### Pipelined Execution of Tiles within a Core
+
+Figure 4 shows an example of tiling for sub-layers. Within a single core (\(P_{i}\)), the partitions of the sub-layers are further divided into tiles, as shown in Figure 4 (b). The first sub-layer \(l_{0}^{i}\) is split into two tiles, \(l_{0,0}^{i}\) and \(l_{0,1}^{i}\). The second sub-layer \(l_{1}^{i}\)
+
+Figure 4. Pipelined execution with tiling (single core)
+
+Figure 3. Parallel execution with partitioning (multicore)
+
+Figure 2. Layer execution of neural network for NPUis split into three tiles, \(I_{1,0}^{i}\), \(I_{1,1}^{i}\) and \(I_{1,2}^{i}\). The third sub-layer \(I_{2}^{i}\) constitutes one tile, \(I_{2,0}^{i}\) as a whole. Tile sizes are determined to overlap global memory accesses with computations. Thus, double buffering on local memory minimizes the execution times of sub-layers in software pipeline of _load_, _compute_, and _store_. This is illustrated in Figure 4 (c). Double buffering combined with pipelining can speed up sub-layer execution on a single core, as the global memory access via DMA can overlap with computations. It also effectively reduces the space requirements of local memory. As only twice the size of each tile is required for input, weight, and output, local memory is saved when three or more tiles are used. The main reason for applying tiling within a single core is not just to improve data locality from reuse in our case. In addition, it is to hide the communication overhead to global memory with double buffering and pipelining, which is also extensively studied in stencil computation [37; 40]. We will enhance pipeline scheduling by having boundary data, called _halo_, ready early for the next layer computation.
+
+## 3 Multicore Optimizations in Compiler
+
+In the compilation phase, the layers of the given network are decomposed to sub-layers, which will be executed individually on a single core. Table 1 shows all possible layer partitioning methods of convolution layers as an example. A layer can be partitioned by splitting one of its input data, kernel weights, output data. Depending on layer operations, it is necessary to partition and/or replicate the rest of its data additionally. The compiler can be given multiple choices for partitioning directions. For an image data, spatial and channel directions are typical choices. The first and the third rows of Table 1 are typical methods for spatial and channel partitioning, respectively. The second and the forth rows, which are marked with asterisks (\(*\)), are alternative spatial and channel partitioning methods, but they require extra communication and computation for partial sum reduction. Compared to the first and third methods, these methods are undesirable in parallel execution, as we need to add extra stages for partial sum reduction.
+
+For the convolution layer partitioning methods specified in the first and third rows of Table 1, Figure 5 depicts two parallel execution schemes for the layers partitioned in spatial and channel directions, respectively. The diagrams are abstractions to show that a layer \(l_{k}\) is partitioned into two sub-layers, \(I_{k}^{0}\) and \(I_{k}^{1}\), and illustrates how input tensors, output tensors and kernel weights are loaded and stored between the global memory and the local memory of each processor (solid lines). They also indicate which data are replicated on the local memory of processing cores (dotted lines). In spatial direction partitioning (Figure 5 (a)), input and output tensors are partitioned in spatial directions, that means images are segmented in half along the height or width. Each partition will be computed on each of two processing cores in parallel. Since the convolution layer needs to apply all the kernel weights to compute the one element of the output tensor, kernel weights are replicated on both processors. Channel direction partitioning (Figure 5 (b)) produces an output image partitioned along channels. Since the convolution layer has a separate set of kernel weights for each channel, the kernel weights and the output tensors are segmented in half along the channel directions, but the input tensors are replicated in both local memories of both processing cores.
+
+Before we propose our compiler optimizations, we need to discuss several aspects of partitioning and tiling techniques.
+
+_1) Data redundancy_. Sub-layers produce their output tensors on multiple processing cores and those output tensors constitute the whole output tensors of the layer. The required input tensors and kernel weights are calculated to perform computations in parallel. Depending on operations, some of the data need to be fed to multiple processing cores. For a convolution layer partitioned in spatial direction as an
+
+\begin{table}
+\begin{tabular}{c c c c} \hline \hline
+**Partition** & **Data** & **Extra** \\
+**direction** & **partitioned** & **replicated** & **comm. \& comp.** \\ \hline spatial & input, output & kernel & none \\ spatial* & kernel & input, output & partial sum reduction \\ \hline channel & kernel, output & input & none \\ channel* & input, kernel & none & partial sum reduction \\ \hline \hline \end{tabular}
+
+* Not preferred due to extra communication and computation across cores
+
+\end{table}
+Table 1: Layer partitioning methods for convolution
+
+Figure 5: Layer partitioning for convolution
+
+Figure 6: Layer scheduling strategies
+
+example, the whole kernel weights are duplicated on multiple processing cores. In addition, borderline data, called _halo_, should be duplicated on input partitions. Since convolution masks (kernel weights) slides over the input image and produce effects of blurring, sharpening, embossing, edge detection, etc, the data near partition boundary should be needed on multiple processing cores.
+
+_2) Data dependency._ Deep neural network forms a graph with directed edges. The nodes representing layers should be executed in a certain order (_e.g._, topological order) to satisfy the enforced dependencies by the directed edges. Before we begin the computation of a layer, the output tensors from its preceding layers should be all ready. Thus, we have to set up an appropriate execution order of layers. Maintaining topological order, we can resort to depth-first or breadth-first scheduling strategy as shown in Figure 6.
+
+_3) Data reusability._ Output tensors of a layer eventually become input tensors for its immediately succeeding layers in a directed graph. When a succeeding layer is scheduled right away at the same processing core, output tensors can be forwarded as input tensors within local memory without having to store and load them from global memory. This optimization, called _feature-map forwarding_ in image processing terms, provides great benefits in terms of performance, power, and memory bandwidth. When local memory is large enough to hold the output tensors for a while, we can have a chance to forward them to multiple immediate succeeding layers by executing those layers. Even though we are not forwarding them right away, we might keep the output in local memory and find chances to forward them later.
+
+_4) Data exchange._ For consecutively running layers, some of output tensors of preceding layers are likely to be reused in the succeeding layers. Instead of accessing global memory to deliver data between layers, direct data exchange among processing cores will save the memory bus bandwidth. The borderline data (_halo_) is a great example, which is shown in Figure 7 (a). Output tensors usually contain no redundant data, but the layers who need them as inputs additionally want _halo_ data from neighboring cores. Thus, _halo_ data are exchanged and replicated among multiple cores by using a special interface called _halo-exchange._
+
+_5) Computation redundancy._ When a layer is partitioned and executed in parallel on multiple cores, synchronization is required at the end of layer execution. Since our parallel execution model stores outputs in global memory and loads them as inputs for the later layer executions. Thus, synchronization ensures that all the data are written to global memory before being read. Synchronizations often cause performance degradation in multicore execution environments. Eliminating them, even at the cost of redundant computation, improves performance. Accumulating layers that can be executed without synchronizations and global memory accesses (copies) is called _stratum construction._ Some layer operations as shown in Figure 7 (b) require redundant data (for input, output, and kernel) and computation (for overlapping data) to remove synchronizations. For multiple consecutive convolution layers, the amount of redundancies in data and computation increases toward the top layers in a _stratum_, but once you build a _stratum_, all multicores can execute them independently within a single core until the last layer.
+
+These aspects of optimizations mentioned above are intertwined with each other. For example, scheduling layers in depth-first order, as shown in Figure 6 (a), increases chances of data reuse. This allows us to apply _feature-map forwarding_ along with _halo-exchange_ and _stratum construction._ On the other hand, scheduling layers in breadth-first order, as shown in Figure 6 (b), eliminates some of the data dependencies among immediately following layers. This allows
+
+Figure 8. Comparison of optimization strategies
+
+Figure 7. Data forwarding with _halo-exchange_ and _stratum construction_
+
+the span between synchronization points to be extended, which in turn can reduce synchronization overhead. However, breadth-first order scheduling will reduce the chance of data reuse between consecutively executed layers. Figure 8 compares several optimization strategies in terms of the optimization aspects discussed above. Each optimization strategy has different preferences for each aspect. That is, optimization problem can not be solved only by the single optimization strategy, but solved by a mixture of different strategies for each part of the neural network.
+
+### Optimizations for Parallelization and Pipelining
+
+In this section, we introduce how the NPU compiler schedules layer executions along with layer partitioning heuristics for parallelization. Then, we describe _stratum construction_ to further optimize schedule by eliminating synchronizations. Finally, we improve the pipelined schedule within a single core to help start _halo-exchange_ as early as possible.
+
+#### 3.1.1. Layer Scheduler
+
+Partitioning direction affects the execution order, which in turn impacts on _data exchange_ and _data reusability_ as well as _data dependency_ between adjacently scheduled layers. When partitioning layers, we prefer a certain direction depending on data and operation characteristics. For successive convolution layers, partitioning in spatial direction is preferred, as it is suitable to exploit temporal data locality between them. In theory, partitioning direction is actually hard to determine, as it is affected by all optimization aspects addressed in the previous section. Thus, we determine partitioning direction by using following heuristics. Spatial and channel directions in the following heuristics are applicable only to image data, but heuristics can be generalized with the same concerns on data reusability, data shape, operation type, and data exchange.
+
+* _h1 (default)_. Spatial partitioning is a default option due to better data reusability than channel partitioning, but channel partitioning is used in the cases of _h2-h5_.
+* _h2 (data reuse)_. While spatial partitioning requires kernel weights to be replicated, channel partitioning needs to replicate input tensors. If kernel weights are too large, compared to input tensors, channel partitioning is preferred to reduce redundant data copies on local memories.
+* _h3 (data shape)_. If the shape of input is too shallow to be split in spatial direction over all cores, channel partitioning is preferred to increase parallelism.
+* _h4 (operation type)_. For channel-wise operations (_e.g._, depth-wise convolution and pooling), channel partitioning is preferred, as it does not require redundant data copy for kernel.
+* _h5 (data exchange)_. If spatial partition incurs too large _halo_ data to exchange due to operation characteristics (_e.g._, kernel, stride, and dilation rate of convolution), channel partitioning could reduce the amount of data to exchange.
+
+```
+1Input : A neural network \(N\), a set of top layers \(in(N)\):
+2Output : An ordered set of layers \(S_{out}\):
+3\(S_{ready}\gets in(N)\); \(l_{cur}\gets S_{ready}.getfirst\) ();
+4while\(S_{ready}\neq\emptyset\)do
+5\(S_{out}\gets S_{out}\cup(l_{cur})\); // schedule current layer
+6\(S_{ready}\gets S_{ready}-\{l_{cur}\}\);
+7\(S_{ready}\gets S_{ready}\cup succ(l_{cur})\);
+8\(l\) // get a successor in depth-first traversal tree
+9\(l_{succ}\gets S_{ready}.get\_succ(l_{cur})\);
+10\(//\) get current or ancestor's sibling in depth-first traversal tree
+11\(l_{slding}\gets S_{ready}get\_sibling(L_{cur})\);
+12ifboth\(l_{succ}\) and \(l_{slding}\) are availablethen
+13ifspatial_partitioning(\(l_{cur}\))then\(l_{next}\gets l_{succ}\) ;
+14else
+15\(l_{next}\gets either\_of\_available(l_{succ}.l_{slding})\);
+16\(l_{cur}\gets l_{next}\);
+```
+
+**Algorithm 1**Layer execution schedule
+
+Algorithm 1 shows how we determine an execution order of layers. It starts from one of input layers of the given network, and tries to choose two candidate layers ready to be executed from \(S_{ready}\): one layer (\(l_{succ}\)) is dependent on the current layer (\(l_{cur}\)) - \(l_{succ}\) is a successor of the current layer, and the other (\(l_{slding}\)) is a sibling or ancestor's sibling layer in depth-first traversal tree - \(l_{sibling}\) has no data dependencies on the current layer. Then, _spatial_partitioning()_ in line 15 of Algorithm 1 determines the next layer to schedule. It is implemented according to the heuristics we described for partition directions (\(h\)_-\(h5\)). General idea of schedule order is that you choose the successor layer if you can increase performance by applying data reuse with the currently scheduled layer; otherwise, you choose the sibling layer, as there is little benefit in data reuse from spatial partitioning.
+
+Once the partitioning direction is determined, we determine the partitioning size for each core. Multicores in the NPU subsystem can be heterogeneous in computing power and memory bandwidth. To achieve performance without wasting cycles in the parallel execution of partitioned layers, the workload should be balanced among the cores. Thus, the partitioning ratio of each core is determined according to its computing power and memory bandwidth to global memory. As a result, the total time of accessing memory and executing kernel should be well-balanced across cores. In addition, memory accesses for data may have alignment constraints. When calculating the amount of data to load and store in global memory, we should also consider alignment constraints of NPU core for better load balancing.
+
+#### 3.1.2. Optimization with _Stratum_ Construction
+
+We also perform _stratum_ optimization for further improvement by eliminating synchronizations. Constructing a _stratum_ of layers starts by visiting the scheduled layers in reverse order. As shown in Figure 7 (b), we need to include borderline data for the next layer in the output redundantly, which allows us to eliminate synchronizations. In turn, we need to compute redundantly to produce borderline (_halo_) data in the output. For this redundant computation, we may also need to have more redundant input than output. In this way, _stratum_ construction starts from the layer in the bottom and builds an accumulation of layers backward in neural network. The more redundant data is required toward the higher layer in the accumulation (_stratum_). Stratum construction proceeds based on the following heuristics:
+
+* _h6 (immediate successor)_. If consecutively scheduled layers are directly connected to each other as successor and predecessor layers, they can be candidates to construct a _stratum_. Since the main benefit of _stratum_ comes from _feature-map forwarding_ and synchronization elimination, they should be scheduled adjacent to each other.
+* _h7 (partitioning directions match)_. To make redundant data and computation minimum, two adjacent layers in _stratum_ should have matching partitioning directions. In convolution partitioning, they should be both spatial. Since consecutive channel partitioning still needs to have all the input tensor in every layer, layers with channel partitioning does not match for _stratum_ construction.
+* _h8 (redundant computation is cheap)_. The estimated cost of redundant computation should be cheaper than expected cost of synchronization. In _stratum_ execution, no data copies to and from global memory. With no synchronization, each core computes locally owned data across multiple layers. Only overheads are redundant computations in those layers. Since we replace synchronizations with redundant computations, the cost comparison in each layer to accumulate should justify the _stratum_ construction. Otherwise, _stratum_ construction should stop and fresh start from that layer for _stratum_ construction.
+
+Based on the above heuristics (_h6-h8_), Algorithm 2 shows how we construct _stratum_ chains in reverse direction of layer scheduling. The **if** conditions in lines 6-8 check the requirements addressed in the heuristics one by one. Then, we determine to include the current layer into the current stratum (_cur_stratum_) and also recalculate the output size of the current layer to include the redundant _halo_ data for the next scheduled layer. With this adjustment, we correctly reflect the increase to the input size and we will propagate toward the upper layer in _stratum_ chain. When the current layer does not bring benefits, the algorithm stops the layer accumulation to the current _stratum_ and adds the layers accumulated so far to _strata_ set_ as a new _stratum_. Then, it resets the accumulation and fresh starts _stratum_ accumulation by setting the current layer as a new base layer.
+
+```
+1Input : Scheduled layers {\(l_{j}\): ordered in execution schedule};
+2Output : Set of constructed strata\(\_\)set;
+3// start stratum construction with the last scheduled layer as base
+4\(\textit{ strata\_set}\leftarrow\emptyset\); \(\textit{cur\_stratum}\leftarrow\{l_{last}\}\); \(l_{prev}\leftarrow\textit{l}_{last}\);
+5for\(l_{curr}\in l_{j}\): all layers in a reverse scheduled order \(\cdot\) {\(l_{last}\)}do
+6if\(l_{prev}=\textit{succ}\textit{local\_curr}\) and // immediate successor in DNN
+7 partition\(\_\textit{direction\_match}(\textit{cur\_prev})\) and
+8 redundant\(\_\textit{compute\_cost}(\textit{cur\_})\) <\(\textit{sync\_cost}(\textit{cl\_curr})\)then
+9 // accumulate current layer to current stratum
+10if\(|\textit{cur\_stratum}|>0\)then
+11 // increase output to include halo for successor layer
+12for\(i\in\textit{all\_micros}\)do
+13\(\textit{output\_size}(l_{curr}^{i})\leftarrow\textit{output\_size}(l_{curr}^ {i})+\textit{halo}(\textit{succ}(l_{curr}^{i}))\)
+14
+15\(\textit{cur\_stratum}\leftarrow\textit{cur\_stratum}\cup l_{curr};l_{prev} \gets l_{curr};\)
+16
+17
+18else
+19 // stop accumulating layer, save current stratum
+20if\(|\textit{cur\_stratum}|>1\)then
+21\(\textit{strat\_set}\leftarrow\textit{strat\_set}\cup\textit{cur\_stratum};\)
+22 // fresh start by retrying current layer as a new base
+23\(\textit{cur\_stratum}\gets l_{curr};l_{prev}\gets l_{curr};\)
+24
+25
+26
+27
+28
+29
+30
+31 end for
+```
+
+**Algorithm 2**_Stratum_ construction
+
+The cost calculations in _redundant_compute_cost()_ and _sync_cost()_ need machine specific data to estimate them accurately. Thus, we measure the necessary operator cost per element on our NPU hardware and also acquire the profile data for synchronization per layer. Based on those measured data, we empirically implement the two cost estimation functions. Another clarification to note is that _stratum_ construction also increases the required memory size to execute layers. However, it is not considered at this stage. Later, pipelining with tiling will have a chance to reduce the required local memory. If this cannot be resolved at the final stage of compilation, the compiler will eliminate layers from the top of the _stratum_ until it fits on actual local memory to run on.
+
+#### 3.1.3 Optimizations with Tiling
+
+Layers are partitioned into sub-layers that are units of parallel execution on multi-cores. A sub-layer is decomposed again within a single core, if 1) the amount of required memory is larger than the local memory or 2) the data transfer time can be hidden by overlapping the computation. The fragments decomposed from a sub-layer are called _tiles_. Previous work [20, 35, 47] showed that the main optimization criterion for tiling is to exploit data locality in memory access to maximize data reusability. On the other hand, in our case, the main role of the tiling is to reduce execution time by software pipelining. Three stages of _load_, _compute_, and _store_ for a tile (\(l_{j,k}^{i}\), \(k\)-\(th\) tile of sub-layer \(l_{j}^{i}\)) are pipelined, overlapping the computation with memory accesses within a single core (\(P_{i}\)). The memory requirement for a tile is reduced by the number of tiles and pipelining is often implemented with double buffers for the tile data. Thus, if we have three and more tiles, we can reduce the amount of required memory in addition to performance benefits.
+
+We consider all possible combinations of tiling directions to meet the local memory size and alignment requirements. When the sub-layers to be tiled are spatially partitioned, tiling them in the same direction can hide _halo_ data transfer overhead. When they are partitioned in any other direction,the tiling direction is determined to maximize data locality, similar to existing works [20, 35]. One caveat is that the NPU compiler compiles sub-layers independently and may produce contradicting tile directions across multiple cores. This may incur unbalanced workload across multicores and unnecessary idle time as a consequence. Thus, profiling execution assists to detect unwanted idle times and fix the unbalance. For tile execution order within a single core, we first schedule the tiles that produce _halo_ data to the next layer if the layer is partitioned spatially (_halo-first policy_). If it is partitioned by more than two directions including spatial direction, the tiles contributing to _halo_ data are scheduled in a data locality maximizing order to minimize the data transfer between local memory and global memory.
+
+### _Halo_ vs. _Stratum_
+
+When two directly connected layers are scheduled consecutively, a large portion of output tensors of the preceding layer may be passed to the succeeding layer as input tensors. The rest of input tensors can be obtained from the other processing cores that compute the adjacent partitions. Those borderline data can be exchanged among cores with _halo-exchange_. Figure 9 (a) shows the parallel execution of two layers (\(l_{1}\) and \(l_{2}\)). At the end of the first layer execution, all processing cores invoke _halo-exchange_ to get the borderline data for the second layer execution. Instead of a series of store, sync, and load (\(st\)\(l_{1}\) - \(sync_{1}\) - \(ld\)\(l_{2}\)) for data passing to the second layer, _halo-exchange_ followed by load-kernel of the second layer (_halo-exch - \(ld\)-\(kn\)\(l_{2}\)_) is enough to ready the second layer computation. Usually, _halo-exchange_ will reduce the amount of data traffic on the bus and the elapsed time as well in parallel execution.
+
+Moreover, if we apply pipelining within a single core as shown in Figure 9 (b), the execution time will be saved greatly again. We only split the first sub-layer into three tiles and the second sub-layer constitutes one tile as a whole, as it is enough to show the benefit of pipelining. With _halo-first policy_, the tiles producing the _halo_ data will be scheduled first in pipeline (we assume that \(l_{1,2}^{i}\) calculates all _halo_ data in the diagram). If _halo-exchange_ totally overlaps with the computations for the rest of the tiles (\(l_{1,0}^{i}\) and \(l_{1,1}^{i}\)), we will have no exposed overhead for borderline data communication. One additional benefit for the second layer is that kernel load for the second layer (\(ld\)-\(kn\)\(l_{2,0}^{i}\)) can start early, while the last tile of the first layer is computing (\(comp\)\(l_{1,1}^{i}\)).
+
+Now, assume a _stratum_ consists of two consecutively scheduled layers (\(l_{1}\) and \(l_{2}\)). Layers in a _stratum_ are executed with no synchronizations and no data passing across cores. Thus, all cores computes the first layer (\(l_{1}\)) after loading its input tensors and kernel weights. Then, its output tensors are just the input tensors for the second layer (\(l_{2}\)). From the second layer, the layers only need to load kernels (\(ld\)-\(kn\)). Thus, _stratum construction_ saves the execution time by eliminating synchronizations, output stores, and input loads, which is depicted in Figure 10 (a). However, when a layer is added to a _stratum_, it will add redundant computations and redundant data to load, which is presented as hatched portion of load and compute in the diagram. Thus, the compiler needs to stop accumulating layers, when its redundancy outweighs the synchronization and memory accesses. We can also apply pipelining along with _stratum_ construction. Figure 10 (b) shows a pipelined execution, when we split the first sub-layer of a core (\(P_{l}\)) into three tiles and take the second sub-layer as one whole tile -- this is the same as the _halo_ pipelining. Since we have only load (or load kernel) and compute for tiles of sub-layers, pipelining can cover all tiles of the sub-layers in a _stratum_ straightforwardly.
+
+_Halo_ optimization can hide the overhead of _halo-exchange_ by overlapping with computations for other tiles. Since _stratum_ optimization requires redundant computations and data load, _halo_ optimization may look better than _stratum_ optimization. However, _halo-exchange_ may hinder the current load stages for other tiles, as it still takes up the bandwidth of the system bus. Moreover, it still implicitly imposes synchronization and may take a heavy toll depending on dynamic situations of the system. On the other hand, _stratum_ construction eliminates synchronizations and data exchanges with the other cores. Compared to the main data to process, its borderline data and redundant computations are very small in practice. Thus, _stratum_ optimization often results in better performance than _halo_ optimization.
+
+Figure 10. Time reduction from _stratum construction_
+
+Figure 9. Time reduction from _halo-exchange_
+
+
+
+## 4. Experiments
+
+We evaluated the proposed optimization methods on Samsung Exynos 2100 (Samsung, 2010) SoC which has three NPU cores (Samsung, 2010; Samsung, 2010). Each core consists of an adder-tree-based inner-product engine, so data alignments for input and output channels are fixed for each. Also they have different bandwidth capabilities. All these factors are taken into account in the compilation phase. For benchmark, we use well-known CNNs listed in Table 2. To show the effectiveness of our optimizations, we performed evaluation runs on several configurations as listed in Table 3. Our baseline scheme, Base, chooses partitioning direction of each layer and determines layer execution schedule as described in heuristics (_h1-h5_). It uses a similar scheme to SmartShuttle (Samsung, 2010), which proposed an adaptive layer tiling according to data shape and off-chip memory access volume. Cumulative optimizations are applied in _+Halo_ and _+Stratum_. In _+Halo_, _halo-exchange_ reduces data traffic and _halo-first policy_ reduces the overhead by overlapping with computations for other tiles. In _+Stratum_, _strata_ are constructed to eliminate synchronization and global memory access at the cost of increased computation.
+
+### Experimental Result
+
+In Figure 11, we show the performance comparison for benchmark models. Understandably, performance is improved by reducing data exchange (_Halo_) and eliminating synchronization (_Stratum_). We also find several notable points from the results. First, the performance is considerably good on a single core. Thus, Base configuration with three cores barely achieves 2x speedups over single core runs. Since inference times for all models are only a few milliseconds, even a small amount of inefficiency makes its overhead look large. Second, optimizations in _Halo_ and _Stratum_ sometimes degrade performance. When we additionally optimize with _Stratum_, InceptionV3 shows slightly lower performance than _Halo_. DeepLabV3+ performs worse with _Halo_ than Base. Since the heuristics for our optimizations rely on profiling data, the dynamic nature can adversely affect optimization results.
+
+Overall, _Halo_ and _Stratum_ achieve further improvement cumulatively from Base by 1.07\(\times\) and 1.23\(\times\), respectively. On average, it is 2.1x faster than single-core execution. Given these results, we confirm that the optimization techniques addressed in this paper effectively improve the performance of neural network inference on multiple NPU cores. Detailed analysis on experimental results are shown below.
+
+_1) Effects of partitioning schemes._ As Base uses _adaptive partitioning_, all configurations are configured to use adaptive ones. To check the effects of partitioning schemes, we compare _adaptive partitioning_ to both _spatial partitioning_ and _channel partitioning_ in terms of the total data transfer amount and idle time on each core. By comparing the total amount of data transfer, we can check how much data transfer is increased due to _data redundancy_. In addition, the partitioning direction affects workload balancing due to the alignment constraints -- channel direction imposes a relatively larger alignment requirement than the spatial direction. If the number of channels is too small to distribute evenly across the cores, core utilization can be degraded.
+
+Table 4 compares the amount of data transfer and idle time on each NPU core for InceptionV3. _Adaptive partitioning_ has the smallest amount of total data transfer and the least idle time on average (\(\mu\)) across the three cores. It also achieves the lowest standard deviation (\(\sigma\)) among cores. It confirms that partitioning in one direction across all layers is unsuitable for maximum core utilization. It can cause inefficient use of system bandwidth due to redundant data transfer between global and local memories while processing cores run idle.
+
+_2) Effects of halo-first policy in pipelining._ Figure 12 shows profile data of the first two convolutional layers in InceptionV3. The top three lines represent two _loads_ of input and weight, and _store_ of output, respectively for _Core0_. Then,
+
+\begin{table}
+\begin{tabular}{c c c c} \hline \hline \multirow{2}{*}{**Category**} & \multirow{2}{*}{**Model**} & **Input size** & **Data** \\  & & (**HxW-w5**) & **type** \\ \hline \multirow{2}{*}{Classification} & InceptionV3 (Samsung, 2010) & 299 \(\times\) 299 \(\times\) 3 & INT8 \\  & MobileNetV2 (Samsung, 2010) & \(224\times 224\times\) 3 & INT8 \\ \hline \multirow{2}{*}{Object detection} & MobileNetV2-SSD (Samsung, 2010) & \(30\times 300\times\) 3 & INT8 \\  & MobileDet-SSD (Samsung, 2010) & \(320\times 320\times\) 3 & INT8 \\ \hline \multirow{2}{*}{Segmentation} & DeepLabV3+ (Samsung, 2010) & \(513\times 513\times\) 3 & INT16 \\  & UNet (Samsung, 2010) & \(572\times 572\times\) 3 & INT8 \\ \hline \hline \end{tabular}
+\end{table}
+Table 2. Benchmark CNN models
+
+Figure 11. Performance comparison of benchmark models (performance = \(\frac{1}{latency}\))
+
+\begin{table}
+\begin{tabular}{c c} \hline \hline
+**Configuration** & **Description** \\ \hline Base\({}^{*}\) & Parallelized with partitioning layers and \\  & pipelined with tiling sub-layers \\ \hline _+Halo_ & \begin{tabular}{c} Cumulatively, optimized with _halo-exchange_ and \\ pipeline scheduled with _halo-first policy_ \\ \end{tabular} \\ \hline _+Stratum_ & 
+\begin{tabular}{c} Cumulatively, optimized with _stratum construction_ \\ for parallel, pipelined run \\ \end{tabular} \\ \hline \hline \end{tabular}
+\end{table}
+Table 3. Configuration for cumulative optimizationsthe following six lines of global memory accesses are depicted for _Core1_ and _Core2_. The bottom three lines represent _compute_ each for three cores. First, we compare two different cases: pipelining (a) without and (b) with the _halo-first policy_. Figure 12 (a) shows idle time, indicated with an arrow, to wait for _halo_ data transfer completion. In Figure 12 (b), the next layer proceeds to compute immediately after the completion of previous layer. Figure 12 (c) shows the profiled schedule when we employ both _halo-first policy_ and _feature-map forwarding_. There is no data load from global memory except _halo_ data exchange. Moreover, its transfer is overlapped with computation. The results confirm that the _halo-first policy_ effectively hides data transfer overhead, even when transferring _halo_ data through global memory, due to no direct connection or shared memory between cores.
+
+#### 5.2.3. Effects of stratum optimization
+
+To show the effectiveness of _stratum_ construction, compared to _halo_ exchange optimization, we perform three tests with different configurations: _+Halo_ only, _+Stratum_ only, and both combined. Table 5 shows the result of _stem_ region in InceptionV3. Applying _halo_ exchange to all layers does not increase the computational amount, but introduces a large amount of synchronization overhead. On the other hand, _stratum_ has less synchronization overhead than _halo_ exchange, but increases the amount of computation due to overlapping areas. As a result, the best performance is achieved when the two optimizations are properly combined. Note that _feature-map forwarding_ optimization can be applied to both optimizations if the size of local buffer is sufficient. In fact, _halo_ exchange can have more chances of _feature-map forwarding_, as _stratum_ comes with increased memory requirements.
+
+## 6. Related Work
+
+Recently, numerous researches have made efforts to optimize DNN inference for embedded systems. (Han et al., 2016; Li et al., 2017; Li et al., 2018; Li et al., 2019; Li et al., 2019; Li et al., 2019; Li et al., 2019) propose neural network optimization techniques including layer tiling. (Li et al., 2019) addresses how operator scheduling impacts on GPU performance. However, they do not consider multi-core partitioning and _inter_-layer optimization.
+
+Also, (Han et al., 2016; Li et al., 2019; Li et al., 2019; Li et al., 2019) propose a layer fusing (_stratum_) technique for a distributed computing environment, and (Li et al., 2019) introduces a retraining technique, fully decomposable spatial partition (FDSP), to overcome a drawback of spatial partitioning: the borderline data should be shared across devices. (Li et al., 2019; Li et al., 2019) propose partitioning techniques to accelerate a single neural network on distributed devices. (Li et al., 2019) proposes a scheduling technique based on Genetic Algorithm (GA) to run deep learning applications on heterogeneous processors. However, they do not consider fine-grained partitioning and scheduling problem for multi-NPU embedded systems.
+
+Tensor Virtual Machine (TVM) (Chen et al., 2016; Chen et al., 2016) supports various optimization techniques for DNNs such as loop tiling and unrolling based on Halide (Li et al., 2019). (Li et al., 2019) introduces automated optimization heuristics, and a learning-based optimization technique is introduced in (Li et al., 2019). To our best knowledge, they do not consider _inter_-core/layer optimization for interoperation of tightly coupled NPU cores addressed in this paper.
+
+## 7. Conclusion
+
+In this paper, we propose parallelization and pipelining models for neural networks on mobile multicore NPU systems. We introduce key optimization criteria -- _data redundancy, data dependency, data reusability, data exchange_ and _computation redundancy_, and relevant optimizations such as _stratum_ construction, _halo_ exchange, and _halo-first policy_. Using multiple CNN models as benchmarks, we evaluate our optimizations and show a 23% performance increase over a sophisticated layer partitioning and scheduling scheme.
+
+## Acknowledgements
+
+We would like to thank Ke Lu, Viacheslav Garbuzov, and all the developers who worked together on the NPU project.
+
+\begin{table}
+\begin{tabular}{c c c c c} \hline \hline
+**Partitioning** & \multicolumn{3}{c}{**Data transfer amount**} & \multicolumn{1}{c}{**Idle time**} \\
+**scheme** & \multicolumn{3}{c}{**(global \(\leftrightarrow\) local mem.)**} \\ \hline \multirow{3}{*}{_Spatial partitioning_} & \multirow{3}{*}{_P0_} & 31,397KB & \(\mu\):23,78KB & 145 us & \(\mu\):770 us \\  & & 22,230KB & \(\sigma\):6,974KB & 1,090 us & \(\sigma\):541 us \\  & & 17,708KB & 1,077 us & \\ \hline \multirow{3}{*}{_Channel partitioning_} & \multirow{3}{*}{_P0_} & 32,151KB & \multirow{3}{*}{\(\mu\):33,717KB} & 163 us & \multirow{3}{*}{\(\mu\):305 us} \\  & & 16,427KB & & 607 us & \\ \cline{1-1}  & & 23,573KB & & 147 us & \\ \hline \multirow{3}{*}{_Adaptive partitioning_} & \multirow{3}{*}{_P1_} & 22,177KB & \multirow{3}{*}{\(\mu\):23,288KB} & 206 us & \multirow{3}{*}{\(\mu\):277 us} \\  & & 15,462KB & & 427 us & \\ \cline{1-1}  & & 22,224KB & & 199 us & \\ \hline \hline \end{tabular}
+\end{table}
+Table 4. Detailed profile data of InceptionV3
+
+Figure 12. Pipelining profile for _halo-first policy_
+
+\begin{table}
+\begin{tabular}{c c c c} \hline \hline
+**Configuration** & **End-to-end** & **Computation** & **Synchronization** \\  & **latency** & **amount** & **overhead** \\ \hline _+Halo_ & 387 us & 1.34G & \(\mu\):21.2 us, \(\sigma\):9.1 us \\ _+Stratum_ & 386 us & 1.39G & \(\mu\):17.5 us, \(\sigma\):9.2 us \\ _Combined_ & 378.8 us & 1.35G & \(\mu\):14.2 us, \(\sigma\):7.5 us \\ \hline \hline \end{tabular}
+
+* _A stem region of InceptionV3 is used._
+
+\end{table}
+Table 5. Comparison of _Halo_ and _Stratum_
+
+## References
+
+* (1)
+* Adams et al. (2019) Andrew Adams, Karima Ma, Luke Anderson, Riyadh Baghdadi, Tzu-Mao Li, Michael Gharbi, Benedic Steiner, Steven Johnson, Kayvon Fatahlian, Fredo Durand, and Jonathan Ragan-Kelley. 2019. Learning to Optimize Halidu with Tree Search and Random Programs. 38, 4., Article 121 (July 2019), 12 pages. [https://doi.org/10.1145/330636.3322967](https://doi.org/10.1145/330636.3322967)
+* Ahn et al. (2019) Byung Hoon Ahn, Prannoy Pilligundla, and Hadi Esmaeilzadeh. 2019. Reinforcement Learning and Adaptive Sampling for Optimized DNN Compilation. [https://doi.org/10.48550/ARXIV.1905.12799](https://doi.org/10.48550/ARXIV.1905.12799)
+* Alwani et al. (2016) M. Alwani, H. Chen, M. Ferdman, and P. Milder. 2016. Fused-layer CNN accelerators. In _2016 49th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO)_. 1-12.
+* Aminabadi et al. (2022) Reza Yazadani Aminabadi, Samyam Rajbhandari, Minjia Zhang, Ammar Ahmad Awan, Cheng Li, Du Li, Elton Zheng, Jeff Rasley, Shaden Smith, Olatuni Rivasse, and Yuxiong He. 2022. DeepSpeed Inference: Enabling Efficient Inference of Transformer Models at Unprecedented Scale. [https://doi.org/10.48550/ARXIV.2207.00032](https://doi.org/10.48550/ARXIV.2207.00032)
+* Apache (2020) Apache. 2020. TVM. [https://vm.apache.org/](https://vm.apache.org/)
+* Chen et al. (2018) Liang-Chieh Chen, Yuku Zhu, George Papandreou, Florian Schroff, and Hartwig Adam. 2018. Encoder-Decoder with Atrous Separable Convolution for Semantic Image Segmentation. In _ECCV_.
+* Chen et al. (2014) Tianshi Chen, Zidong Du, Ninghui Sun, Jia Wang, Chengyong Wu, Yunji Chen, and Olivier Temam. 2014. DihanNao: A Small-Footprint High-Throughput Accelerator for Ubiquitous Machine-Learning. In _Proceedings of the 19th International Conference on Architectural Support for Programming Languages and Operating Systems_ (Salt Lake City, Utah, USA) _(ASPLOS '14)_. Association for Computing Machinery, New York, NY, USA, 269-284. [https://doi.org/10.1145/2541904.2541967](https://doi.org/10.1145/2541904.2541967)
+* Chen et al. (2018) Tianqi Chen, Thierry Moreau, Ziheng Jiang, Liamin Zheng, Eddie Yan, Haichen Shen, Meghan Cowan, Leyuan Wang, Yuwei Hu, Luis Ceze, Carlos Guestrin, and Arvind Krishnamurthy. 2018. TVM: An Automated End-to-End Optimizing Compiler for Deep Learning. In _13th USENIX Symposium on Operating Systems Design and Implementation (OSDI 18)_. USENIX Association, Carlsbad, CA, 578-594. [https://www.usenix.org/conference/osdi18/presentation/chen](https://www.usenix.org/conference/osdi18/presentation/chen)
+* Chen et al. (2016) Yu-Hsin Chen, Joel Emer, and Vivenne Sze. 2016. Everisis: A Spatial Architecture for Energy-Efficient Dataflow for Convolutional Neural Networks. In _2016 ACM/IEEE 43rd Annual International Symposium on Computer Architecture (ISCA)_. 367-379. [https://doi.org/10.1109/ISCA.2016.40](https://doi.org/10.1109/ISCA.2016.40)
+* Cipolletta and Calimera (2021) Antonio Cipolletta and Andrea Calimera. 2021. Dataflow Restructuring for Active Memory Reduction in Deep Neural Networks. In _2021 Design, Automation & Test in Europe Conference & Exhibition (DATE)_. 114-119. [https://doi.org/10.23919/DATE51398.2021.9473965](https://doi.org/10.23919/DATE51398.2021.9473965)
+* Ding et al. (2021) Yaoyao Ding, Ligeng Zhu, Zhihao Jia, Gennady Pekhimenko, and Song Han. 2021. Iss: Inter-operator scheduler for cnn acceleration. _Proceedings of Machine Learning and Systems_ 3 (2021).
+* ETH (2020) ETH. 2020. AI-Benchmark. [http://ai-benchmark.com/](http://ai-benchmark.com/)
+* Fan et al. (2021) Shiqing Fan, Yi Rong, Chen Meng, Zongyan Cao, Siyu Wang, Zhen Zheng, Chuan Wu, Guoping Long, Jun Yang, Lixue Xia, Lansong Diao, Xiaoyong Liu, and Wei Lin. 2021. DAPPLE: A Pipelined Data Parallel Approach for Training Large Models. In _Proceedings of the 26th ACM SIGPLAN Symposium on Principles and Practice of Parallel Programming (PPoPP 21)_ (Virtual Event, Republic of Korea) _(PPoPP '21)_. Association for Computing Machinery, New York, NY, USA, 431-445. [https://doi.org/10.1145/3437801.341593](https://doi.org/10.1145/3437801.341593)
+* Gao et al. (2019) Mingyu Gao, Xuan Yang, Jing Pu, Mark Horowitz, and Christos Kozyrakis. 2019. TANGRAM: Optimized Coarse-Grained Dataflow for Scalable NN Accelerators. In _Proceedings of the Twenty-Fourth International Conference on Architectural Support for Programming Languages and Operating Systems_ (Providence, RI, USA) _(ASPLOS '19)_. Association for Computing Machinery, New York, NY, USA, 807-820. [https://doi.org/10.1145/3297858.3304014](https://doi.org/10.1145/3297858.3304014)
+* Halide (2012) Halide. 2012. A language for fast, portable computation on images and tensors. [https://halide-lang.org/](https://halide-lang.org/)
+* Huawei (2019) Huawei. 2019. Huawei launches Ascend 910, the world's most powerful AI processor, and MindSpore, an all-scenario AI computing framework. [https://www.huawei.com/en/news/2019/8/huawei-ascend-910-most-powerful-ai-processor](https://www.huawei.com/en/news/2019/8/huawei-ascend-910-most-powerful-ai-processor)
+* Jang et al. (2020) Jun-Woo Jang, Sohwan Lee, Dongyoung Kim, Hyunsun Park, Ali Shafiee Ardestani, Yeongjae Choi, Channoh Kim, Yoojin Kim, Hyongoseko Yu, Hamzah Abdel-Aziz, Jun-Seok Park, Heonsoco Lee, Dongwoo Lee, Myeong Woo Kim, Hanwoong Jung, Heewoo Nam, Dongguen Lim, Seungwon Lee, Joon-Ho Song, Sukham Kwon, Joseph Hassoun, SukHwan Lim, and Changkyu Choi. 2021. Sparsity-Aware and Re-configurable NPU Architecture for Samsung Flagship Mobile SoC. _2021 ACM/IEEE 48th Annual International Symposium on Computer Architecture (ISCA)_ (2021), 15-28.
+* Kang et al. (2020) Duseok Kang, Jinwoo Oh, Jongwoo Choi, Youngmi Yin, and Soonhohi Ha. 2020. Scheduling of Deep Learning Applications Onto Heterogeneous Processors in an Embedded Device. _IEEE Access_ 8 (2020), 43980-43991. [https://doi.org/10.1109/ACCESS.2020.2977496](https://doi.org/10.1109/ACCESS.2020.2977496)
+* Li et al. (2020) En Li, Liekang Zeng, Zhi Zhou, and Xu Chen. 2020. Edge AI: On-Demand Acceleration Deep Neural Network Inference via Edge Computing. _IEEE Transactions on Wireless Communications_ 19, 1 (2020), 447-457. [https://doi.org/10.1109/TWC.2019.2946140](https://doi.org/10.1109/TWC.2019.2946140)
+* Li et al. (2018) Jiajun Li, Guihai Yan, Wenyan Lu, Shuhao Jiang, Shijun Gong, Jingya Wu, and Xiaowei Li. 2018. SmartShuttle: Optimizing off-chip memory accesses for deep learning accelerators. In _2018 Design, Automation & Test in Europe Conference & Exhibition (DATE)_. 343-348. [https://doi.org/10.23919/DATE.2018.8342033](https://doi.org/10.23919/DATE.2018.8342033)
+* Li et al. (2021) Rui Li, Yufan Xu, Aravind Sukumaran-Rajam, Atanas Rountev, and P. Sadayappan. 2021. Analytical Characterization and Design Space Exploration for Optimization of CNNs. In _Proceedings of the 26th ACM International Conference on Architectural Support for Programming Languages and Operating Systems_ (Virtual, USA) _(ASPLOS 2021)_. Association for Computing Machinery, New York, NY, USA, 928-942. [https://doi.org/10.1145/3445818.3446759](https://doi.org/10.1145/3445818.3446759)
+* Liu et al. (2016) Wei Liu, Dragomir Anguelov, Dumitru Erhan, Christian Szegedy, Scott Reed, Cheng-Yang Fu, and Alexander C. Berg. 2016. SSD: Single Shot MultiBox Detector. In _ECCV_.
+* Ma et al. (2020) Lingxiao Ma, Zhiqiang Xie, Zhi Yang, Jilong Xue, Yousshan Miao, Wei Cui, Wenxiang Hu, Fan Yang, Lintao Zhang, and Lidong Zhou. 2020. Rammer: Enabling Holistic Deep Learning Compiler Optimizations with rTasks. In _14th USENIX Symposium on Operating Systems Design and Implementation (OSDI 20)_. USENIX Association, 881-897. [https://www.usenix.org/conference/osdi20/presentation/ma](https://www.usenix.org/conference/osdi20/presentation/ma)
+* Mao et al. (2017) Jao, X. Chen, K. W. Nixon, C. Krieger, and Y. Chen. 2017. MoDNN: Local distributed mobile computing system for Deep Neural Network. In _Design, Automation Test in Europe Conference Exhibition (DATE), 2017_. 1396-1401.
+* Mullapudi et al. (2016) Ravi Teja Mullapudi, Andrew Adams, Dillon Sharlet, Jonathan Ragan-Kelley, and Kayvon Fatahlian. 2016. Automatically Scheduling Halide Image Processing Pipelines. _ACM Trans. Graph._ 35, 4. Article 83 (July 2016), 11 pages. [https://doi.org/10.1145/2897824.2925952](https://doi.org/10.1145/2897824.2925952)
+* Narayanan et al. (2021) Deepak Narayanan, Mohammad Shoeybi, Jared Casper, Patrick LeGresley, Mostofa Patwar, Vijay Kyrthikanti, Duriy Vanhjendr, Prethvi Kashhunlti, Julie Bernauer, Bryan Catanzaro, Amar Phanishayee, and Matei Zaharia. 2021. Efficient Large-Scale Language Model Training on GPU Clusters Using Megstrom-LM. In _Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis (SC 21)_. Association for Computing Machinery, New York, NY, USA, Article 58, 15 pages. [https://doi.org/10.1145/3458817.3476209](https://doi.org/10.1145/3458817.3476209)
+* Park et al. (2021) Jun-Seok Park, Jun-Woo Jang, Heonsoco Lee, Dongwoo Lee, Sehwan Lee, Hanwoong Jung, Seungwon Lee, Sukham Kwon, Kyungah Jeong, Joon-Ho Song, SukHwan Lim, and Inyup Kang. 2021. 9.5 A 6K-MACFeature-Map-Sparsity-Aware Neural Processing Unit in 5nm Flagship Mobile SoC. In _2021 IEEE International Solid- State Circuits Conference (ISSCC)_, Vol. 64. 152-154. [https://doi.org/10.1109/ISSCC.42613.2021](https://doi.org/10.1109/ISSCC.42613.2021).
+* Rajbhandari et al. (2020) Samyam Rajbhandari, Jeff Rasley, Olatunji Ruwase, and Yuxiong He. 2020. ZeRO: Memory Optimizations toward Training Trillion Parameter Models. In _Proceedings of the International Conference for High Performance Computing, Networking, Storage and Analysis (SC 20)_ (Atlanta, Georgia) _(SC '20)_. IEEE Press, Article 20, 16 pages.
+* Rajbhandari et al. (2021) Samyam Rajbhandari, Olatunji Ruwase, Jeff Rasley, Shaden Smith, and Yuxiong He. 2021. ZeRO-Infinity: Breaking the GPU Memory Wall for Extreme Scale Deep Learning. [https://doi.org/10.48550/ARXIV.2014.07857](https://doi.org/10.48550/ARXIV.2014.07857)
+* Reddi et al. (2020) Vijay Janapa Reddi, Christine Cheng, David Kanter, Peter Mattson, Guenther Schmuelling, Carole-Jean Wu, Brian Anderson, Maximilien Breughe, Mark Charlebois, William Chou, Ramesh Chukka, Cody Coleman, Sam Davis, Pan Deng, Greg Diamos, Jared Duke, Dave Fick, J. Scott Gardner, Iray Hubara, Sachin Idqunji, Thomas B. Jablin, Jeff Jiao, Tom St. John, Pankaj Kanwar, David Lee, Jeffery Liao, Anton Lokhmotov, Francisco Massa, Peng Meng, Paulius Micikevicius, Colin Osborne, Gennady Rehimenko, Arun Tejuseg Rabinnath Rajan, Dilip Sequeira, Ashish Sirasao, Fei Sun, Hanlin Tang, Michael Thomson, Frank Wei, Ephrem Wu, Lingjie Xu, Koichi Yamada, Bing Yu, George Yuan, Aaron Zhong, Peizhao Zhang, and Yuchen Zhou. 2020. MLPerf Inference Benchmark., 446-459 pages. [https://doi.org/10.1109/ISCA45697.2020.00045](https://doi.org/10.1109/ISCA45697.2020.00045)
+* Ronneberger et al. (2015) Olaf Ronneberger, Philipp Fischer, and Thomas Brox. 2015. U-Net: Convolutional Networks for Biomedical Image Segmentation. arXiv:1505.04597 [cs.CV]
+* Samsung (2021) Samsung. 2021. Exynos 2100. [https://www.samsung.com/semiconductor/minisite/exynos/products/mobileprocessor/exynos-2100/](https://www.samsung.com/semiconductor/minisite/exynos/products/mobileprocessor/exynos-2100/)
+* Sandler et al. (2019) Mark Sandler, Andrew Howard, Menglong Zhu, Andrey Zhmoginov, and Liang-Chieh Chen. 2019. MobileNetV2: Inverted Residuals and Linear Bottlenecks. arXiv:1801.04381 [cs.CV]
+* Shoeybi et al. (2019) Mohammad Shoeybi, Mostofa Patwar, Paul Puri, Patrick LeGresley, Jared Casper, and Bryan Catanzaro. 2019. Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism. [https://doi.org/10.48550/ARXIV.1909.08053](https://doi.org/10.48550/ARXIV.1909.08053)
+* Sousa et al. (2021) Rafael Sousa, Byungmin Jung, Jaehy Kwak, Michael Frank, and Guido Araujo. 2021. Efficient Tensor Slicing for Multicore NPUs using Memory Burst Modeling. In _2021 IEEE 33rd International Symposium on Computer Architecture and High Performance Computing (SBAC-PAD)_. 84-93. [https://doi.org/10.1109/SBAC-PAD53543.2021.00020](https://doi.org/10.1109/SBAC-PAD53543.2021.00020)
+* Szegedy et al. (2015) Christian Szegedy, Vincent Vanhoucke, Sergey Ioffe, Jonathon Shlens, and Zbigniew Wojna. 2015. Rethinking the Inception Architecture for Computer Vision. arXiv:1512.00567 [cs.CV]
+* Tan et al. (2011) Guangming Tan, Linchuan Li, Sean Tirechle, Everett Phillips, Yungang Bao, and Ninghui Sun. 2011. Fast Implementation of DGEMM on Fermi GPU. In _Proceedings of 2011 International Conference for High Performance Computing, Networking, Storage and Analysis_ (Seattle, Washington) _(SC '11)_. Association for Computing Machinery, New York, NY, USA, Article 35, 11 pages. [https://doi.org/10.1145/2063384.2063431](https://doi.org/10.1145/2063384.2063431)
+* Tavaragari et al. (2020) Sanhet Tavaragari, Alexander Heinecke, Sasikanth Avancha, Gagandegoyal, Ramakrishna Upadrasta, and Bharat Kaul. 2020. PolyDLi: Polyhedral Optimizations for Creation of High Performance DL primitives.
+* Unger et al. (2022) Colin Unger, Zhihao Jia, Wei Wu, Sina Lin, Mandeep Baines, Carlos Efrain Quintero Narvaez, Vinay Ramakrishnaiah, Nirmal Prajapati, Pat McCormick, Jamaludin Mohd-Yussof, Xi Luo, Dheevatsa Mudigere, Jongsoo Park, Misha Smelyanskiy, and Alex Aiken. 2022. Unity: Accelerating DNN Training Through Joint Optimization of Algebraic Transformations and Parallelization. In _16th USENIX Symposium on Operating Systems Design and Implementation (OSDI 22)_. USENIX Association, Carlsbad, CA, 267-284. [https://www.usenix.org/conference/osd122/presentation/unger](https://www.usenix.org/conference/osd122/presentation/unger)
+* Wang and Chandramowlishwaran (2020) Hengjie Wang and Aparna Chandramowlishwaran. 2020. Pencil: A Pipelined Algorithm for Distributed Stencils. In _SC20: International Conference for High Performance Computing, Networking, Storage and Analysis_ 1-16. [https://doi.org/10.1109/SC4105.2020.00089](https://doi.org/10.1109/SC4105.2020.00089)
+* Xiong et al. (2021) Yunyang Xiong, Hanxiao Liu, Suyog Gupta, Berkin Akin, Gabriel Bender, Yonghee Wang, Pieter-Jan Kindermans, Mingqing Tan, Vikas Singh, and Bo Chen. 2021. Mobiolelets: Searching for object detection architectures for mobile accelerators. In _Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition_. 3825-3834.
+* Xu et al. (2021) Yuanzhong Xu, HyoukJoong Lee, Dehao Chen, Blake Hechtman, Yanping Huang, Rahul Joshi, Maxim Krikun, Derjelinkin, Andy Ly, Marcello Maggioni, Ruoming Pang, Noam Shazeer, Shibo Wang, Tao Wang, Yonghui Wu, and Zhifeng Chen. 2021. GSPMD: General and Scalable Parallelization for ML Computation Graphs. [https://doi.org/10.48550/ARXIV.2105.04663](https://doi.org/10.48550/ARXIV.2105.04663)
+* Zhang et al. (2016) Shijin Zhang, Zidong Du, Lei Zhang, Huiying Lan, Shaoli Liu, Ling Li, Qi Guo, Tianshi Chen, and Yunji Chen. 2016. Cambricon-x: An accelerator for sparse neural networks. In _2016 49th Annual IEEE/ACM International Symposium on Microarchitecture (MICRO)_. IEEE, 1-12.
+* Zhang et al. (2021) S. Zhang, S. Zhang, Z. Qian, J. Wu, Y. Jin, and S. Lu. 2021. DeepSlicing: Collaborative and Adaptive CNN Inference With Low Latency. _IEEE Transactions on Parallel and Distributed Systems_ 32, 9 (2021), 2175-2187. [https://doi.org/10.1109/TPDS.2021.3058532](https://doi.org/10.1109/TPDS.2021.3058532)
+* ICPP_ (Edmonton, AB, Canada) _(ICPP '20)_. Association for Computing Machinery, New York, NY, USA, Article 10, 11 pages. [https://doi.org/10.1145/3404397.3404473](https://doi.org/10.1145/3404397.3404473)
+* Zhao et al. (2018) Z. Zhao, K. M. Barijough, and A. Gersflauer. 2018. DeepThings: Distributed Adaptive Deep Learning Inference on Resource-Constrained IoT Edge Clusters. _IEEE Transactions on Computer-Aided Design of Integrated Circuits and Systems_ 37, 11 (2018), 2348-2359. [https://doi.org/10.1109/TCAD.2018.2858384](https://doi.org/10.1109/TCAD.2018.2858384)
+* Zheng et al. (2020) Liaminin Zheng, Chengfan Jia, Minmin Sun, Zhao Wu, Cody Hao Yu, Ameer Haj-Ali, Yida Wang, Jun Yang, Danyangyang Zhu, Koushik Sen, et al. 2020. Ansor: Generating high-performance tensor programs for deep learning. In _14th USENIX Symposium on Operating Systems Design and Implementation ({OSDI 20})_. 863-879.
+* Zheng et al. (2022) Liaminin Zheng, Zhuohan Li, Hao Zhang, Yonghao Zhuang, Zhifeng Chen, Yanping Huang, Yida Wang, Yuanzhong Xu, Danyangyang Zhu, Eric P. Xing, Joseph E. Gonzalez, and Ion Stoica. 2022. Alpha: Automating Inter- and Intra-Operator Parallelism for Distributed Deep Learning. In _16th USENIX Symposium on Operating Systems Design and Implementation (OSDI 22)_. USENIX Association, Carlsbad, CA, 559-578. [https://www.usenix.org/conference/osd122/presentation/zheng-liaminin](https://www.usenix.org/conference/osd122/presentation/zheng-liaminin)
+* Zheng et al. (2022) Shixuan Zheng, Xianjue Zhang, Leibo Liu, Shaojun Wei, and Shouyi Yin. 2022. Atomic Dataflow based Graph-Level Workload Orchestration for Scalable DNN Accelerators. In _2022 IEEE International Symposium on High-Performance Computer Architecture (HPCA)_. 475-489. [https://doi.org/10.1109/HPCA5396.2022.200042](https://doi.org/10.1109/HPCA5396.2022.200042)
+* Zhou et al. (2019) Li Zhou, Mohammad Hossein Samavatian, Anys Bacha, Saikat Majumdar, and Radu Teodorescu. 2019. Adaptive Parallel Execution of Deep Neural Networks on Heterogeneous Edge Devices. In _Proceedings of the 4th ACM/IEEE Symposium on Edge Computing_ (Arlington, Virginia) _(SEC '19)_. Association for Computing Machinery, New York, NY, USA, 195-208. [https://doi.org/10.1145/3318216.3363312](https://doi.org/10.1145/3318216.3363312)
+* Zhu et al. (2022) Hongyu Zhu, Ruofan Wu, Yijia Diao, Shanbin Ke, Haoyu Li, Chen Zhang, Jilong Xue, Lingxiao Ma, Yuqing Xia, Wei Cui, Fan Yang, Mao Yang, Lidong Zhou, Asaf Cidon, and Gennady Pekhimenko. 2022.
+
+ROLLER: Fast and Efficient Tensor Compilation for Deep Learning. In _16th USENIX Symposium on Operating Systems Design and Implementation (OSDI 22)_, USENIX Association, Carlsbad, CA, 233-248. [https://www.usenix.org/conference/osdi22/presentation/zhu](https://www.usenix.org/conference/osdi22/presentation/zhu)
