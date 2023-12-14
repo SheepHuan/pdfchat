@@ -9,7 +9,7 @@ print(response)
 
 
 """
-
+$env:HF_ENDPOINT="https://hf-mirror.com"
 huggingface-cli download  --resume-download --local-dir-use-symlinks False THUDM/chatglm3-6b-32k --local-dir THUDM/chatglm3-6b-32k
 
 """
