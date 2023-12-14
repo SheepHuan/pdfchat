@@ -15,7 +15,7 @@ import hashlib
 from fastapi.middleware.cors import CORSMiddleware
 import pypdfium2
 import torch
-from nougat import NougatModel
+from nougat_api import NougatModel
 from nougat.postprocessing import markdown_compatible, close_envs
 from nougat.utils.dataset import ImageDataset
 from nougat.utils.checkpoint import get_checkpoint

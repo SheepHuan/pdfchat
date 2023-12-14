@@ -1,6 +1,3 @@
-from django.shortcuts import render
-from django.http import JsonResponse,HttpResponse
-from django.http import HttpResponseRedirect
 import os
 from PIL import Image, UnidentifiedImageError
 from functools import partial
@@ -16,12 +13,13 @@ from nougat.utils.checkpoint import get_checkpoint
 from nougat.dataset.rasterize import rasterize_paper
 from nougat.utils.device import move_to_device, default_batch_size
 from tqdm import tqdm
-from .forms import PdfForm
+import markdown
 # Imaginary function to handle an uploaded file.
 # from somewhere import handle_uploaded_file
-BATCHSIZE = int(os.environ.get("NOUGAT_BATCHSIZE", default_batch_size()))
+# BATCHSIZE = int(os.environ.get("NOUGAT_BATCHSIZE", default_batch_size()))
+BATCHSIZE = 4
 NOUGAT_CHECKPOINT = get_checkpoint()
-SAVE_PATH = "tmp/files"
+SAVE_PATH = "tmp/nougat"
 os.makedirs(SAVE_PATH,exist_ok=True)
 
 
@@ -30,13 +28,14 @@ model = None
 def load_model(
     checkpoint: str = NOUGAT_CHECKPOINT,
 ):
-    global model, BATCHSIZE
-    if model is None:
-        model = NougatModel.from_pretrained(checkpoint)
-        model = move_to_device(model, cuda=BATCHSIZE > 0)
-        if BATCHSIZE <= 0:
-            BATCHSIZE = 1
-        model.eval()
+     global model, BATCHSIZE
+     if model is None:
+          model = NougatModel.from_pretrained(checkpoint)
+          model = model.to(torch.bfloat16)
+          model = model.to("cuda:2")
+          if BATCHSIZE <= 0:
+               BATCHSIZE = 1
+          model.eval()
 
 load_model()
 
@@ -119,34 +118,25 @@ def predict(
           (save_path / "pages" / ("%02d.mmd" % (page_num + 1))).write_text(
                predictions[idx], encoding="utf-8"
           )
-     final = "".join(predictions).strip()
+     final = "\n".join(predictions).strip()
      (save_path / "doc.mmd").write_text(final, encoding="utf-8")
-     return final 
-
-def nougat(request):
-     if request.method == 'POST':
-          # print(request.POST)
-          form = PdfForm(request.POST,request.FILES)
-          if form.is_valid():
-               path = os.path.join(SAVE_PATH,str(form.cleaned_data["pdf_file"]))
-               with open(path,'wb+') as f:
-                    for chunk in form.cleaned_data["pdf_file"].chunks():
-                         f.write(chunk)
-               predict(path)
-                # 构建 JavaScript 代码
-               javascript_code = '''
-                    <script>
-                    window.open('result/12131');
-                    window.location.href = '';
-                    </script>
-               '''
-               return HttpResponse(javascript_code)
-         
-     elif request.method == 'GET':
-        form = PdfForm(None)
-     return render(request, 'form.html', {'form': form})
-
-
-def result(request,param):
      
-     return HttpResponse(f"Hello, world. You're at the polls {param}.")
+     html = f"""
+               <!DOCTYPE html>
+<head>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex/dist/katex.min.css" crossorigin="anonymous"><script src="https://cdn.jsdelivr.net/npm/katex/dist/katex.min.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/katex/dist/contrib/mathtex-script-type.min.js" defer></script>
+
+</head>
+    <body>
+{final}
+    </body> 
+</html>
+               """
+     
+     (save_path / "doc.html").write_text(html, encoding="utf-8")
+     return "\n".join(predictions),md5
+
+
+if __name__=="__main__":
+     pass
