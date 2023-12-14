@@ -12,7 +12,7 @@ class OcrModel(models.Model):
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     
-    pdf_file = models.FileField(upload_to='files/tmp/pdf/')
+    pdf_file = models.FileField(upload_to='tmp/pdf/')
     mmd_file = models.FilePathField()
     
     # ocr_model_type = 

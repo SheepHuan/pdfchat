@@ -1,3 +1,6 @@
 nougat-ocr
 fastapi
 python-multipart
+django-crispy-forms
+django
+crispy_bootstrap5

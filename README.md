@@ -43,4 +43,7 @@ django-admin startproject pdfchat .
 python3 manage.py startapp ocr
 
 python3 manage.py startapp chatllm
+
+python manage.py migrate
+python manage.py makemigrations
 ```

@@ -2,7 +2,9 @@ __pycache__/
 pdfs/
 *.deb
 THUDM/
-*.html
+
 *.exe
 *.7z
 tmp/
+*.sqlite3
+.vscode/
