@@ -34,6 +34,13 @@ docker run -it -d --gpus all --ipc=host -p 7891:8000 --name=llm-api \
     python api/server.py
 ```
 
-## TODO
+## Django
 
-1. 实现并发
+```bash
+
+django-admin startproject pdfchat .
+
+python3 manage.py startapp ocr
+
+python3 manage.py startapp chatllm
+```

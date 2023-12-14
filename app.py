@@ -69,15 +69,6 @@ async def main():
         html_content = f.read()
     return HTMLResponse(content=html_content)
 
-# @app.get("/")
-# def root():
-#     """Health check."""
-#     response = {
-#         "status-code": HTTPStatus.OK,
-#         "data": {},
-#     }
-#     return response
-
 
 @app.post("/predict/")
 async def predict(

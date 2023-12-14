@@ -5,12 +5,10 @@ pip install python-markdown-math
 
 """
 
-import pdfkit
 from markdown import markdown
-from weasyprint import HTML
 
 
-def convert(input,output):
+def convert_html(input,output):
     with open(input, encoding='utf-8') as f:
         text = f.read()
 
@@ -22,7 +20,7 @@ def convert(input,output):
     html = html.format(text)
     with open("test.html", "w", encoding='utf-8') as f:
         f.write(html)
-    HTML(string=html).write_pdf(output)
+    # HTML(string=html).write_pdf(output)
     # options = {
     # 'page-size':'Letter',
     # 'margin-top':'0.75in',
@@ -36,4 +34,4 @@ def convert(input,output):
 
 
 if __name__=="__main__":
-    convert("pdfs/19df1fc056628fb8e799569066bb5df6/doc.mmd","doc.pdf")
+    convert_html("doc.mmd","doc.html")

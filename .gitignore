@@ -5,3 +5,4 @@ THUDM/
 *.html
 *.exe
 *.7z
+tmp/
